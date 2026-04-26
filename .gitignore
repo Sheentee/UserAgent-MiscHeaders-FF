@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+
+# IDE specific files
+.vscode/
+.idea/
+
+# OS specific checks
+.DS_Store
+Thumbs.db
+Desktop.ini
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Build artifacts
+dists/
+*.zip
+*.xpi
+*.crx
+
+# Agent artifacts
+.gemini/
