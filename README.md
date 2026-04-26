@@ -1,4 +1,4 @@
-# UserAgent-MiscHeaders-FF
+# UserAgent-MiscHeaders
 
 A Firefox extension for managing User-Agent and other miscellaneous HTTP headers.
 
