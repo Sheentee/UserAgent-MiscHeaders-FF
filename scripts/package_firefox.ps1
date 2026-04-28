@@ -2,7 +2,7 @@ $ErrorActionPreference = "Stop"
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $rootDir = Split-Path -Parent $scriptDir
-$distDir = Join-Path $rootDir "dists"
+$distsDir = Join-Path $rootDir "dists"
 $manifestPath = Join-Path $rootDir "manifest.json"
 
 # Read version from manifest
@@ -11,47 +11,33 @@ $version = $manifest.version
 
 $zipName = "UserAgent-MiscHeaders-firefox_v$version.zip"
 $xpiName = "UserAgent-MiscHeaders-firefox_v$version.xpi"
-$zipPath = Join-Path $distDir $zipName
-$xpiPath = Join-Path $distDir $xpiName
+$zipPath = Join-Path $distsDir $zipName
+$xpiPath = Join-Path $distsDir $xpiName
 
 # Create dist directory
-if (-not (Test-Path $distDir)) {
-    New-Item -ItemType Directory -Path $distDir | Out-Null
-    Write-Host "Created dists directory."
+if (-not (Test-Path $distsDir)) {
+    New-Item -ItemType Directory -Path $distsDir | Out-Null
+    Write-Host "Created dist directory."
 }
 
 # Remove existing files
 if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
 if (Test-Path $xpiPath) { Remove-Item $xpiPath -Force }
 
-# Excludes
-$exclude = @(
-    "*.git*",
-    "*.gitignore*",
-    "*scripts*",
-    "*dists*",
-    "*.zip",
-    "*.xpi",
-    "*.gemini*",
-    "task.md",
-    "implementation_plan.md",
-    "walkthrough.md",
-    "*.DS_Store"
+$itemsToPackage = @(
+    "icons",
+    "about-sheentee.js",
+    "background.js",
+    "manifest.json",
+    "popup.html",
+    "popup.js",
+    "styles.css"
 )
-
-# Load required assembly
-Add-Type -AssemblyName System.IO.Compression.FileSystem
-
-# Get files (Recurse is important for the manual loop below)
-$files = Get-ChildItem -Path $rootDir -Recurse -Exclude $exclude | Where-Object { 
-    $_.FullName -notmatch "\\.git" -and 
-    $_.FullName -notmatch "\\scripts" -and 
-    ($_.FullName -ne $distDir) -and
-    $_.FullName -notmatch "\\dists\\" -and
-    $_.FullName -notmatch "\\.gemini"
-}
+$files = Get-ChildItem -Path $itemsToPackage -Recurse | Where-Object { -not $_.PSIsContainer }
 
 # Create zip using .NET to ensure proper path separators (forward slashes)
+Add-Type -AssemblyName System.IO.Compression
+Add-Type -AssemblyName System.IO.Compression.FileSystem
 $zipFile = [System.IO.Compression.ZipFile]::Open($zipPath, [System.IO.Compression.ZipArchiveMode]::Create)
 
 try {
@@ -99,5 +85,4 @@ finally {
 
 # Rename to .xpi
 Rename-Item -Path $zipPath -NewName $xpiName
-
 Write-Host "Firefox extension packaged: $xpiPath"

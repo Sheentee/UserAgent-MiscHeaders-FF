@@ -42,9 +42,30 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Event Listeners
     enableToggle.addEventListener('change', () => {
-        const isEnabled = enableToggle.checked;
-        tabStates[tabId] = isEnabled;
-        saveAndApply();
+        if (enableToggle.checked) {
+            // Request permissions immediately in the event handler (no await before it)
+            chrome.permissions.request({ origins: ['<all_urls>'] })
+                .then((granted) => {
+                    if (!granted) {
+                        enableToggle.checked = false;
+                        alert("This extension requires host permissions to intercept network requests. Please grant them or enable 'Always allow on this site' in about:addons.");
+                        return;
+                    }
+                    const isEnabled = enableToggle.checked;
+                    tabStates[tabId] = isEnabled;
+                    saveAndApply();
+                })
+                .catch((err) => {
+                    console.error("Permission request error:", err);
+                    const isEnabled = enableToggle.checked;
+                    tabStates[tabId] = isEnabled;
+                    saveAndApply();
+                });
+        } else {
+            const isEnabled = enableToggle.checked;
+            tabStates[tabId] = isEnabled;
+            saveAndApply();
+        }
     });
 
     userAgentInput.addEventListener('change', () => {

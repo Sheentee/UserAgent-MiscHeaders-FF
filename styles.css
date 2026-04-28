@@ -216,31 +216,22 @@ h2 {
     z-index: 10;
 }
 
-.footer-donate {
-    display: flex;
-    justify-content: center;
-    width: 100%;
-}
-
-.btn-donate {
-    background-color: #0070ba;
-    color: #ffffff !important;
-    padding: 8px 16px;
-    border-radius: 20px;
-    font-size: 13px;
-    font-weight: 600;
-    text-decoration: none;
-    transition: background-color 0.2s;
-    display: inline-block;
+.footer-info {
     text-align: center;
-    border: none;
-    cursor: pointer;
+    font-size: 13px;
+    color: var(--text-secondary);
 }
 
-.btn-donate:hover {
-    background-color: #005ea6;
+.footer-info a {
+    color: var(--accent-color);
     text-decoration: none;
+    font-weight: 600;
 }
+
+.footer-info a:hover {
+    text-decoration: underline;
+}
+
 
 /* Utilities */
 .mb-2 {

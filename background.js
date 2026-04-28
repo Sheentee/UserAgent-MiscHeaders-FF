@@ -1,142 +1,120 @@
 // background.js
 
-const RESOURCE_TYPES = [
-    "main_frame", "sub_frame", "stylesheet", "script", "image", "font",
-    "object", "xmlhttprequest", "ping", "csp_report", "media", "websocket", "other"
-];
+let stateCache = null;
+let statePromise = null;
 
-// Helper to get the next available rule ID
-async function getNextRuleId() {
-    const data = await chrome.storage.session.get('nextRuleId');
-    let nextId = data.nextRuleId || 1;
-    // Ensure we stay within 32-bit integer range (1 to 2^31 - 1)
-    if (nextId >= 2000000000) {
-        nextId = 1;
+// Helper to reliably get state, dealing with MV3 background script suspension
+async function getState() {
+    if (stateCache) return stateCache;
+    if (statePromise) return statePromise;
+    
+    statePromise = new Promise((resolve) => {
+        const storageAPI = (typeof browser !== 'undefined' ? browser : chrome).storage.local;
+        storageAPI.get(['userAgent', 'customHeaders', 'tabStates'], (data) => {
+            stateCache = {
+                userAgent: data.userAgent || navigator.userAgent,
+                customHeaders: data.customHeaders || [],
+                tabStates: data.tabStates || {}
+            };
+            resolve(stateCache);
+        });
+    });
+    
+    return statePromise;
+}
+
+// Keep stateCache synchronized with popup changes
+(typeof browser !== 'undefined' ? browser : chrome).storage.onChanged.addListener((changes, area) => {
+    if (area === 'local' && stateCache) {
+        if (changes.userAgent) stateCache.userAgent = changes.userAgent.newValue || navigator.userAgent;
+        if (changes.customHeaders) stateCache.customHeaders = changes.customHeaders.newValue || [];
+        if (changes.tabStates) stateCache.tabStates = changes.tabStates.newValue || {};
     }
-    await chrome.storage.session.set({ nextRuleId: nextId + 1 });
-    return nextId;
-}
-
-// Helper to get rule IDs for a tab
-async function getRuleIdsForTab(tabId) {
-    const data = await chrome.storage.session.get('tabRules');
-    const tabRules = data.tabRules || {};
-    return tabRules[tabId] || [];
-}
-
-// Helper to set rule IDs for a tab
-async function setRuleIdsForTab(tabId, ruleIds) {
-    const data = await chrome.storage.session.get('tabRules');
-    const tabRules = data.tabRules || {};
-    if (ruleIds.length > 0) {
-        tabRules[tabId] = ruleIds;
-    } else {
-        delete tabRules[tabId];
-    }
-    await chrome.storage.session.set({ tabRules });
-}
+});
 
 // Listen for messages from the popup
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+(typeof browser !== 'undefined' ? browser : chrome).runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === 'UPDATE_RULES') {
-        updateRules(message.tabId, message.userAgent, message.customHeaders, message.enabled)
-            .then(() => sendResponse({ status: 'success' }))
-            .catch(err => {
-                console.error("Error updating rules:", err);
-                sendResponse({ status: 'error', message: err.toString() });
-            });
-        return true; // Keep channel open for async response
+        const { tabId, userAgent, customHeaders, enabled } = message;
+        // Update cache immediately to avoid waiting for storage.onChanged
+        if (stateCache) {
+            stateCache.userAgent = userAgent;
+            stateCache.customHeaders = customHeaders;
+            stateCache.tabStates[tabId] = enabled;
+        }
+        console.log(`[Background] Updated rules for Tab ${tabId}. Enabled: ${enabled}`);
+        sendResponse({ status: 'success' });
+    }
+    return true;
+});
+
+// Clean up state when a tab is closed
+(typeof browser !== 'undefined' ? browser : chrome).tabs.onRemoved.addListener(async (tabId) => {
+    const state = await getState();
+    if (state.tabStates.hasOwnProperty(tabId)) {
+        delete state.tabStates[tabId];
+        const storageAPI = (typeof browser !== 'undefined' ? browser : chrome).storage.local;
+        storageAPI.set({ tabStates: state.tabStates });
     }
 });
 
-// Clean up rules when a tab is closed
-chrome.tabs.onRemoved.addListener(async (tabId) => {
-    const ruleIdsToRemove = await getRuleIdsForTab(tabId);
-    if (ruleIdsToRemove.length > 0) {
-        await chrome.declarativeNetRequest.updateSessionRules({
-            removeRuleIds: ruleIdsToRemove
-        });
-        await setRuleIdsForTab(tabId, []);
-    }
-});
+// webRequest Blocking Listener
+const webRequestAPI = (typeof browser !== 'undefined' ? browser : chrome).webRequest;
+webRequestAPI.onBeforeSendHeaders.addListener(
+    async function(details) {
+        const state = await getState();
 
-async function updateRules(tabId, userAgent, customHeaders, enabled) {
-    console.log(`[Background] Updating rules for Tab ${tabId}. Enabled: ${enabled}`);
+        // If the request doesn't belong to a tab, or the tab isn't enabled, don't modify headers
+        if (details.tabId === -1 || !state.tabStates[details.tabId]) {
+            return { requestHeaders: details.requestHeaders };
+        }
 
-    if (!tabId) {
-        console.error("[Background] Invalid tabId:", tabId);
-        return;
-    }
+        console.log(`[webRequest] Intercepting request for tab ${details.tabId}: ${details.url}`);
 
-    // 1. Get and remove existing rules for this tab
-    const oldRuleIds = await getRuleIdsForTab(tabId);
+        let newHeaders = [];
+        let uaModified = false;
+        let modifiedCustomHeaders = new Set();
 
-    // Prepare removal
-    const updateOptions = {
-        removeRuleIds: oldRuleIds
-    };
+        // Iterate through existing headers to modify them safely
+        for (let header of details.requestHeaders) {
+            let headerName = header.name.toLowerCase();
+            let newValue = header.value;
 
-    if (!enabled) {
-        console.log(`[Background] Disabling rules for Tab ${tabId}`);
-        await chrome.declarativeNetRequest.updateSessionRules(updateOptions);
-        await setRuleIdsForTab(tabId, []);
-        return;
-    }
-
-    // 2. Generate new rules
-    const newRules = [];
-
-    // Rule for User-Agent
-    if (userAgent) {
-        const id = await getNextRuleId();
-        newRules.push({
-            id: id,
-            priority: 1,
-            action: {
-                type: 'modifyHeaders',
-                requestHeaders: [
-                    { header: 'User-Agent', operation: 'set', value: userAgent }
-                ]
-            },
-            condition: {
-                tabIds: [parseInt(tabId, 10)],
-                resourceTypes: RESOURCE_TYPES
+            // Modify User-Agent
+            if (headerName === 'user-agent' && state.userAgent) {
+                newValue = state.userAgent;
+                uaModified = true;
             }
-        });
-    }
 
-    // Rules for Custom Headers
-    if (customHeaders && Array.isArray(customHeaders)) {
-        for (const header of customHeaders) {
-            if (header.name && header.value) {
-                const id = await getNextRuleId();
-                newRules.push({
-                    id: id,
-                    priority: 1,
-                    action: {
-                        type: 'modifyHeaders',
-                        requestHeaders: [
-                            { header: header.name, operation: 'set', value: header.value }
-                        ]
-                    },
-                    condition: {
-                        tabIds: [parseInt(tabId, 10)],
-                        resourceTypes: RESOURCE_TYPES
+            // Modify Custom Headers if they already exist
+            if (state.customHeaders && state.customHeaders.length > 0) {
+                for (let customHeader of state.customHeaders) {
+                    if (headerName === customHeader.name.toLowerCase()) {
+                        newValue = customHeader.value;
+                        modifiedCustomHeaders.add(customHeader.name.toLowerCase());
                     }
-                });
+                }
+            }
+
+            newHeaders.push({ name: header.name, value: newValue });
+        }
+
+        // If User-Agent wasn't found in the original request, add it
+        if (!uaModified && state.userAgent) {
+            newHeaders.push({ name: 'User-Agent', value: state.userAgent });
+        }
+
+        // Add Custom Headers that weren't in the original request
+        if (state.customHeaders && state.customHeaders.length > 0) {
+            for (let customHeader of state.customHeaders) {
+                if (!modifiedCustomHeaders.has(customHeader.name.toLowerCase())) {
+                    newHeaders.push({ name: customHeader.name, value: customHeader.value });
+                }
             }
         }
-    }
 
-    // 3. Apply updates
-    updateOptions.addRules = newRules;
-    console.log(`[Background] Adding ${newRules.length} rules for Tab ${tabId}`, newRules);
-
-    await chrome.declarativeNetRequest.updateSessionRules(updateOptions);
-
-    // 4. Save new rule IDs
-    const newRuleIds = newRules.map(r => r.id);
-    await setRuleIdsForTab(tabId, newRuleIds);
-
-    console.log(`[Background] Rules updated successfully for Tab ${tabId}`);
-}
+        return { requestHeaders: newHeaders };
+    },
+    { urls: ["<all_urls>"] },
+    ["blocking", "requestHeaders"]
+);
